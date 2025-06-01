@@ -872,88 +872,90 @@ function splitSentence(sentenceText, isCurrentlyQuestion = null) {
 // END OF MODIFIED splitSentence FUNCTION
 // =======================================================================
 
-// --- START: Word Animation Variables and Functions ---
-let animatedWord = {
-  targetWordRect: null, // 애니메이션 대상 단어의 wordRect 객체
-  wordText: "",
-  startTime: 0,
-  durationUp: 220, // 솟구치는 시간 (ms) - "슉!"
-  durationDown: 550, // 돌아오는 시간 (ms) - "천천히"
-  maxHeight: 18,   // 솟구치는 최대 높이 (px)
-  isActive: false,
-  charPositions: [] // { char, x, originalY, currentY, width }
-};
+// --- START: Word Animation Variables and Functions (Refactored for multiple animations) ---
+let activeAnimations = []; // Holds all currently active word animations
+
+// Duration and height constants for word animations
+const WORD_ANIM_DURATION_UP = 220;
+const WORD_ANIM_DURATION_DOWN = 550;
+const WORD_ANIM_MAX_HEIGHT = 18;
+
 
 function startWordWaveAnimation(wordRect, drawingContext) {
   if (!wordRect || !wordRect.word || !drawingContext) return;
-  // 이미 같은 단어가 애니메이션 중이거나, 다른 애니메이션이 활성화된 경우 중복 방지
-  if (animatedWord.isActive && animatedWord.targetWordRect === wordRect) return;
-  if (animatedWord.isActive) { // 다른 단어가 애니메이션 중이면 일단 종료
-      animatedWord.isActive = false; // 이전 애니메이션 강제 종료
-  }
 
+  // Remove any existing animation for this *specific* wordRect to avoid duplicates if re-triggered quickly
+  activeAnimations = activeAnimations.filter(anim => {
+      // Basic check: if word, x, y, lineIndex, and type (question/answer) are the same
+      return !(anim.targetWordRect.word === wordRect.word &&
+               Math.abs(anim.targetWordRect.x - wordRect.x) < 1 &&
+               Math.abs(anim.targetWordRect.y - wordRect.y) < 1 &&
+               anim.targetWordRect.lineIndex === wordRect.lineIndex &&
+               anim.targetWordRect.isQuestionWord === wordRect.isQuestionWord);
+  });
 
-  animatedWord.targetWordRect = wordRect;
-  animatedWord.wordText = wordRect.word;
-  animatedWord.startTime = performance.now();
-  animatedWord.isActive = true;
-  animatedWord.charPositions = [];
+  const newAnimation = {
+    targetWordRect: { ...wordRect }, // Store a copy of the wordRect
+    wordText: wordRect.word,
+    startTime: performance.now(),
+    durationUp: WORD_ANIM_DURATION_UP,
+    durationDown: WORD_ANIM_DURATION_DOWN,
+    maxHeight: WORD_ANIM_MAX_HEIGHT,
+    isActive: true, // Indicates this animation object is live
+    charPositions: [] // { char, x, originalY, currentY, width }
+  };
 
-  const letters = animatedWord.wordText.split('');
+  const letters = newAnimation.wordText.split('');
   let currentDeferredX = 0;
-
-  drawingContext.font = englishFont;
+  drawingContext.font = englishFont; // Ensure context has the correct font for measurement
 
   letters.forEach((char) => {
     const charWidth = drawingContext.measureText(char).width;
-    animatedWord.charPositions.push({
+    newAnimation.charPositions.push({
       char: char,
-      x: wordRect.x + currentDeferredX,
-      originalY: wordRect.y,
+      x: wordRect.x + currentDeferredX, // Base X from the wordRect
+      originalY: wordRect.y,           // Base Y (center of text line) from the wordRect
       currentY: wordRect.y,
       width: charWidth
     });
     currentDeferredX += charWidth;
   });
+
+  activeAnimations.push(newAnimation);
 }
 
-function updateWordAnimation(currentTime) {
-  if (!animatedWord.isActive || !animatedWord.targetWordRect) {
-    animatedWord.isActive = false;
-    return;
+function updateWordAnimations(currentTime) { // Plural, as it updates all active animations
+  for (let i = activeAnimations.length - 1; i >= 0; i--) {
+    const anim = activeAnimations[i];
+
+    if (!anim.isActive || !anim.targetWordRect) { // Should ideally not happen if managed well
+      activeAnimations.splice(i, 1);
+      continue;
+    }
+
+    const elapsedTime = currentTime - anim.startTime;
+    let yOffsetFactor;
+
+    if (elapsedTime < anim.durationUp) {
+      // Up phase
+      const t = elapsedTime / anim.durationUp;
+      yOffsetFactor = t * (2 - t); // ease-out quad
+    } else if (elapsedTime < anim.durationUp + anim.durationDown) {
+      // Down phase
+      const t = (elapsedTime - anim.durationUp) / anim.durationDown;
+      yOffsetFactor = Math.pow(1 - t, 2); // ease-in quad (but for offset, so it goes from 1 down to 0)
+    } else {
+      // Animation finished
+      activeAnimations.splice(i, 1); // Remove from active list
+      continue;
+    }
+
+    const yOffset = yOffsetFactor * anim.maxHeight;
+
+    anim.charPositions.forEach((cp) => {
+      cp.currentY = cp.originalY - yOffset; // Apply offset to each character
+    });
   }
-
-  const elapsedTime = currentTime - animatedWord.startTime;
-  let yOffsetFactor;
-
-  if (elapsedTime < animatedWord.durationUp) {
-    // 솟구치는 단계: 0에서 1로 (ease-out quad)
-    const t = elapsedTime / animatedWord.durationUp;
-    yOffsetFactor = t * (2 - t);
-  } else if (elapsedTime < animatedWord.durationUp + animatedWord.durationDown) {
-    // 돌아오는 단계: 1에서 0으로 (ease-in quad)
-    const t = (elapsedTime - animatedWord.durationUp) / animatedWord.durationDown; // t는 0에서 1로 증가
-    yOffsetFactor = Math.pow(1 - t, 2); // (1-t)^2, 1에서 0으로 감소
-  } else {
-    // 애니메이션 종료
-    animatedWord.isActive = false;
-    // 단어 위치를 원래대로 복원
-    animatedWord.charPositions.forEach(cp => cp.currentY = cp.originalY);
-    return;
-  }
-
-  const yOffset = yOffsetFactor * animatedWord.maxHeight;
-
-  // const numChars = animatedWord.charPositions.length; // 더 이상 사용하지 않음
-  animatedWord.charPositions.forEach((cp /*, index */) => { // index 더 이상 사용하지 않음
-    // 기존: 각 글자에 대한 웨이브 효과 (시간차 적용)
-    // const delayFactor = Math.sin((index / numChars) * Math.PI); // 0 (양끝) to 1 (중간)
-    // const waveOffset = yOffset * delayFactor;
-    // cp.currentY = cp.originalY - waveOffset;
-
-    // 수정: 모든 글자에 동일한 yOffset 적용하여 단어 전체가 함께 움직이도록 함
-    cp.currentY = cp.originalY - yOffset;
-  });
 }
 // --- END: Word Animation Variables and Functions ---
 
@@ -963,7 +965,7 @@ function drawSingleSentenceBlock(sentenceObject, baseY, isQuestionBlock, blockCo
 
     let localWordRects = [];
     ctx.font = englishFont;
-    ctx.textAlign = "left"; // 중요: 글자별 X좌표를 시작점으로 사용하므로 left 정렬
+    ctx.textAlign = "left"; 
     ctx.textBaseline = "middle";
 
     let lines = [sentenceObject.line1, sentenceObject.line2].filter(l => l && l.trim());
@@ -988,10 +990,10 @@ function drawSingleSentenceBlock(sentenceObject, baseY, isQuestionBlock, blockCo
         const lineText = lines[i];
         let currentLineCenterY = yFirstLineTextCenter + i * LINE_HEIGHT;
 
-        if (isQuestionBlock) { // 질문 블록 Y 조정
-            if (i === 0) currentLineCenterY -= 10; // 첫 줄 위로
-        } else { // 답변 블록 Y 조정
-            if (i === 1) currentLineCenterY += 10; // 둘째 줄 아래로
+        if (isQuestionBlock) { 
+            if (i === 0) currentLineCenterY -= 10; 
+        } else { 
+            if (i === 1) currentLineCenterY += 10; 
         }
 
 
@@ -1032,35 +1034,36 @@ function drawSingleSentenceBlock(sentenceObject, baseY, isQuestionBlock, blockCo
                     color = "#40b8ff";
                 }
             }
-            ctx.fillStyle = color; // 색상 설정
+            ctx.fillStyle = color; 
 
-            // 현재 단어의 정보로 wordRect 객체 생성 (애니메이션 비교용)
             const currentWordRectData = {
                 word: rawWord, x: wordStartX, y: currentLineCenterY,
                 w: measuredWordWidth, h: wordHeight, lineIndex: i, isQuestionWord: isQuestionBlock
             };
-
-            let isAnimatingThisWord = false;
-            if (animatedWord.isActive && animatedWord.targetWordRect &&
-                animatedWord.targetWordRect.word === currentWordRectData.word &&
-                Math.abs(animatedWord.targetWordRect.x - currentWordRectData.x) < 1 &&
-                Math.abs(animatedWord.targetWordRect.y - currentWordRectData.y) < 1 &&
-                Math.abs(animatedWord.targetWordRect.w - currentWordRectData.w) < 1 &&
-                animatedWord.targetWordRect.h === currentWordRectData.h &&
-                animatedWord.targetWordRect.lineIndex === currentWordRectData.lineIndex &&
-                animatedWord.targetWordRect.isQuestionWord === currentWordRectData.isQuestionWord) {
-                isAnimatingThisWord = true;
+            
+            let matchingAnimation = null;
+            for (const anim of activeAnimations) {
+                if (anim.targetWordRect.word === currentWordRectData.word &&
+                    Math.abs(anim.targetWordRect.x - currentWordRectData.x) < 1 &&
+                    Math.abs(anim.targetWordRect.y - currentWordRectData.y) < 1 &&
+                    // Math.abs(anim.targetWordRect.w - currentWordRectData.w) < 1 && // Width can vary slightly with canvas measureText
+                    anim.targetWordRect.h === currentWordRectData.h &&
+                    anim.targetWordRect.lineIndex === currentWordRectData.lineIndex &&
+                    anim.targetWordRect.isQuestionWord === currentWordRectData.isQuestionWord) {
+                    matchingAnimation = anim;
+                    break;
+                }
             }
 
-            if (isAnimatingThisWord) {
-                animatedWord.charPositions.forEach((charPos) => {
+            if (matchingAnimation) {
+                matchingAnimation.charPositions.forEach((charPos) => {
                     ctx.fillText(charPos.char, charPos.x, charPos.currentY);
                 });
             } else {
                 ctx.fillText(rawWord, wordStartX, currentLineCenterY);
             }
             
-            localWordRects.push(currentWordRectData); // 항상 rect 정보는 저장
+            localWordRects.push(currentWordRectData);
 
             if (j < words.length - 1) {
                 currentX += measuredWordWidth + adjustedSpaceWidth;
@@ -1123,8 +1126,7 @@ function drawCenterSentence() {
         return;
     }
 
-    // centerSentenceWordRects는 drawSingleSentenceBlock 호출 결과로 채워짐
-    let newWordRects = []; // 이번 프레임에 그려질 단어들의 rect 정보
+    let newWordRects = []; 
 
     ctx.save();
     ctx.globalAlpha = centerAlpha;
@@ -1151,7 +1153,7 @@ function drawCenterSentence() {
         const questionLinesForHeight = [currentQuestionSentence.line1, currentQuestionSentence.line2].filter(l => l && l.trim());
         if (questionLinesForHeight.length > 0) {
             let actualFirstLineCenterY = questionBlockCenterY - (questionLinesForHeight.length * LINE_HEIGHT) / 2 + LINE_HEIGHT / 2;
-            if (questionLinesForHeight.length > 0) actualFirstLineCenterY -=10; // 질문 첫 줄 Y 조정 반영
+            if (questionLinesForHeight.length > 0) actualFirstLineCenterY -=10; 
             playButtonQuestionY = actualFirstLineCenterY - btnH_forHitbox / 2;
         }
 
@@ -1182,14 +1184,13 @@ function drawCenterSentence() {
 
         if (currentQuestionSentence) {
             topYForAnswerBlock = questionDrawOutput.lastY + ANSWER_OFFSET_Y;
-        } else { // 질문 없이 답변만 있을 경우 (이 경우는 현재 로직 상 드뭄)
+        } else { 
             let effectiveCenterY = mainRenderAreaYCenter;
-            if (answerLines.length === 2) effectiveCenterY -= 10 / 2; // 답변 Y 조정 고려
+            if (answerLines.length === 2) effectiveCenterY -= 10 / 2; 
              topYForAnswerBlock = effectiveCenterY - (answerBlockHeight / 2);
         }
 
-        const answerFirstLineCenterY = topYForAnswerBlock + LINE_HEIGHT / 2; // 첫 줄 기준 Y
-        // 답변은 두 줄일 때 둘째 줄이 내려가므로, 버튼 Y는 첫 줄 기준으로 유지
+        const answerFirstLineCenterY = topYForAnswerBlock + LINE_HEIGHT / 2; 
         playButtonRect = { x: btnX, y: answerFirstLineCenterY - btnH_forHitbox / 2, w: btnW_forHitbox, h: btnH_forHitbox };
         if (showPlayButton) {
             drawPlayButton(playButtonRect, currentVisualScaleForHitbox);
@@ -1213,7 +1214,7 @@ function drawCenterSentence() {
             ctx.restore();
         }
     }
-    centerSentenceWordRects = newWordRects; // 터치 상호작용을 위해 wordRects 업데이트
+    centerSentenceWordRects = newWordRects; 
 
 
     if (activeWordTranslation && activeWordTranslation.show) {
@@ -1230,11 +1231,10 @@ function drawCenterSentence() {
         const padding = 6;
         let tx = activeWordTranslation.x + activeWordTranslation.w / 2;
         let ty;
-        if (activeWordTranslation.lineIndex === 0) { // 첫번째 줄 단어면 위에 표시
-             // 질문 첫 줄이고 Y 조정이 있었다면 그것도 고려해야 함. activeWordTranslation.y는 이미 조정된 y
+        if (activeWordTranslation.lineIndex === 0) { 
             ctx.textBaseline = "bottom";
             ty = englishWordMiddleY - englishWordHalfHeight - padding;
-        } else { // 두번째 줄 단어면 아래에 표시 (또는 첫 줄이고 답변 블록인 경우)
+        } else { 
             ctx.textBaseline = "top";
             ty = englishWordMiddleY + englishWordHalfHeight + padding;
         }
@@ -1279,20 +1279,20 @@ function startFireworks(sentenceTextForFireworks, globalSentenceIndex, explosion
     } else { // Answer
         if (currentQuestionSentence && currentQuestionSentenceIndex === globalSentenceIndex - 1) {
             questionTextForLayout = (currentQuestionSentence.line1 + " " + currentQuestionSentence.line2).trim();
-        } else if (globalSentenceIndex > 0 && sentences[globalSentenceIndex - 1]) { // 이전 문장 Q 정보 로드
+        } else if (globalSentenceIndex > 0 && sentences[globalSentenceIndex - 1]) { 
             questionTextForLayout = sentences[globalSentenceIndex - 1];
-        } else { // Q 정보 없을 때 (이론상으론 드묾)
-            questionTextForLayout = " "; // 빈 공간으로 처리
+        } else { 
+            questionTextForLayout = " "; 
         }
         currentAnswerSentence = null; currentAnswerSentenceIndex = null;
-        showPlayButton = false; // 답변 재생 버튼은 아직 표시 안함
+        showPlayButton = false; 
         showTranslationForAnswer = false;
     }
 
     if (activeWordTranslation) activeWordTranslation.show = false;
     activeWordTranslation = null;
     if (wordTranslationTimeoutId) clearTimeout(wordTranslationTimeoutId);
-    centerSentenceWordRects = []; // 불꽃놀이 중에는 단어 클릭 비활성화
+    centerSentenceWordRects = []; 
 
     const [fireworkLine1, fireworkLine2] = splitSentence(sentenceTextForFireworks, isNewSentenceQuestion);
     const wordsForFireworks = [];
@@ -1300,7 +1300,7 @@ function startFireworks(sentenceTextForFireworks, globalSentenceIndex, explosion
     if (fireworkLine2.trim()) wordsForFireworks.push(...fireworkLine2.split(" ").map(word => ({ word, row: 1 })));
 
     if(wordsForFireworks.length === 0) {
-        sentenceActive = false; return; // 표시할 단어 없으면 종료
+        sentenceActive = false; return; 
     }
 
     const baseRadius = 51.2 * 0.88; const maxRadius = 120.96 * 0.88;
@@ -1320,7 +1320,7 @@ function startFireworks(sentenceTextForFireworks, globalSentenceIndex, explosion
     const mainRenderAreaYCenter = topOffset + (canvas.height - topOffset) / 2;
     const [sL1_fw, sL2_fw] = splitSentence(sentenceTextForFireworks, isNewSentenceQuestion);
     const sLines_fw = [sL1_fw, sL2_fw].filter(l => l && l.trim());
-    const sentenceBlockFinalHeight_fw = sLines_fw.length * LINE_HEIGHT + (sLines_fw.length === 2 && isNewSentenceQuestion ? -10 : (sLines_fw.length === 2 && !isNewSentenceQuestion ? 10 : 0)); // Y 조정 고려
+    const sentenceBlockFinalHeight_fw = sLines_fw.length * LINE_HEIGHT + (sLines_fw.length === 2 && isNewSentenceQuestion ? -10 : (sLines_fw.length === 2 && !isNewSentenceQuestion ? 10 : 0)); 
 
 
     for (let j = 0; j < wordsForFireworks.length; j++) {
@@ -1330,44 +1330,33 @@ function startFireworks(sentenceTextForFireworks, globalSentenceIndex, explosion
 
         if (roleOfNewSentence === 'question') {
             const qBlockFinalCenterY = mainRenderAreaYCenter + SENTENCE_VERTICAL_ADJUSTMENT;
-            // 불꽃놀이 단어의 최종 Y 위치 (질문)
             wordTargetY = qBlockFinalCenterY - sentenceBlockFinalHeight_fw / 2 + (wordsForFireworks[j].row * LINE_HEIGHT) + (LINE_HEIGHT / 2);
-            if (wordsForFireworks[j].row === 0) wordTargetY -= 10; // 질문 첫 줄 Y 조정 반영
+            if (wordsForFireworks[j].row === 0) wordTargetY -= 10; 
         } else { // Answer
             const [qTextL1_layout, qTextL2_layout] = splitSentence(questionTextForLayout, true);
             const qTextLines_layout = [qTextL1_layout, qTextL2_layout].filter(l => l && l.trim());
             let questionBlockActualHeight_layout = qTextLines_layout.length * LINE_HEIGHT;
-            if(qTextLines_layout.length === 1) questionBlockActualHeight_layout -=10; // 질문 한 줄일 때 Y조정 반영
-             // 질문 두 줄일 때는 첫줄 -10, 둘째줄 0. 블록 높이는 LINE_HEIGHT*2 - 10)
-            // 여기서는 drawSingleSentenceBlock과 유사한 Y계산을 위한 근사치
-
+            if(qTextLines_layout.length === 1) questionBlockActualHeight_layout -=10; 
+            
             const questionBlockActualCenterY_layout = mainRenderAreaYCenter + SENTENCE_VERTICAL_ADJUSTMENT;
             let questionBlockActualBottomY_layout = questionBlockActualCenterY_layout + questionBlockActualHeight_layout / 2;
-             if (qTextLines_layout.length === 1) { // 질문이 한 줄일 때 (첫 줄만 있고 Y 조정됨)
-                 // qBlockCenterY - (LINE_HEIGHT/2) -10 (첫줄중앙) + LINE_HEIGHT/2 = qBlockCenterY -10 (첫줄 바닥)
-                 // 이 계산은 drawSingleSentenceBlock의 lastY와 정확히 일치해야 함.
-                 // lastY = currentLineCenterY + LINE_HEIGHT/2 (조정된 currentLineCenterY 기준)
-                 // 질문이 한 줄이고 첫 줄(-10)이면, lastY = (qBlockCenterY - (LINE_HEIGHT/2) -10) + LINE_HEIGHT/2 = qBlockCenterY - 10
+             if (qTextLines_layout.length === 1) { 
                  questionBlockActualBottomY_layout = questionBlockActualCenterY_layout - 10;
              } else if (qTextLines_layout.length === 2){
-                  // 첫 줄 Y: qBlockCenterY - LINE_HEIGHT -10 + LINE_HEIGHT/2 = qBlockCenterY - LINE_HEIGHT/2 -10
-                  // 둘째 줄 Y: qBlockCenterY - LINE_HEIGHT -10 + LINE_HEIGHT/2 + LINE_HEIGHT = qBlockCenterY + LINE_HEIGHT/2 -10
-                  // lastY는 둘째 줄 기준: (qBlockCenterY + LINE_HEIGHT/2 -10) + LINE_HEIGHT/2 = qBlockCenterY + LINE_HEIGHT -10
-                 questionBlockActualBottomY_layout = questionBlockActualCenterY_layout + LINE_HEIGHT - 10; // 가정: 질문이 두 줄일때 마지막 줄 바닥 Y
-             } else if (qTextLines_layout.length === 0) { // 질문이 없으면
-                 questionBlockActualBottomY_layout = questionBlockActualCenterY_layout; // 중앙을 기준으로
+                 questionBlockActualBottomY_layout = questionBlockActualCenterY_layout + LINE_HEIGHT - 10; 
+             } else if (qTextLines_layout.length === 0) { 
+                 questionBlockActualBottomY_layout = questionBlockActualCenterY_layout; 
              }
 
 
             let answerBlockFinalTopY_fw;
             if (qTextLines_layout.length > 0) {
                 answerBlockFinalTopY_fw = questionBlockActualBottomY_layout + ANSWER_OFFSET_Y;
-            } else { // 질문 없으면 답변을 질문 위치에 그림
+            } else { 
                 answerBlockFinalTopY_fw = questionBlockActualCenterY_layout - sentenceBlockFinalHeight_fw / 2;
             }
-            // 불꽃놀이 단어의 최종 Y 위치 (답변)
             wordTargetY = answerBlockFinalTopY_fw + (wordsForFireworks[j].row * LINE_HEIGHT) + (LINE_HEIGHT / 2);
-            if (wordsForFireworks[j].row === 1) wordTargetY += 10; // 답변 둘째 줄 Y 조정 반영
+            if (wordsForFireworks[j].row === 1) wordTargetY += 10; 
         }
 
 
@@ -1376,7 +1365,7 @@ function startFireworks(sentenceTextForFireworks, globalSentenceIndex, explosion
             x: centerX, y: explosionY,
             radius: baseRadius, maxRadius: maxRadius,
             color: color,
-            targetX: 0, // gather 단계에서 계산됨
+            targetX: 0, 
             targetY: wordTargetY,
         });
     }
@@ -1401,13 +1390,13 @@ function updateFireworks() {
   } else if (fireworksState.phase === "hold") {
     if (fireworksState.t >= fireworksState.holdDuration) {
       fireworksState.phase = "gather"; fireworksState.t = 0;
-      centerAlpha = 0; // 문장 나타나기 전 잠시 숨김
+      centerAlpha = 0; 
     }
   } else if (fireworksState.phase === "gather") {
     const progress = Math.min(fireworksState.t / fireworksState.gatherDuration, 1);
-    const ease = Math.pow(progress, 2); // 점점 빠르게 모이도록
-    const tempCtx = canvas.getContext('2d'); // For text measurement
-    tempCtx.font = englishFont; // Set font for accurate measurement
+    const ease = Math.pow(progress, 2); 
+    const tempCtx = canvas.getContext('2d'); 
+    tempCtx.font = englishFont; 
     const isGatherSentenceQuestion = fireworksState.roleOfNewSentence === 'question';
     const [sentenceLine1Gather, sentenceLine2Gather] = splitSentence(fireworksState.sentenceTextToDisplayAfter, isGatherSentenceQuestion);
     let sentenceLineWordArrays = [];
@@ -1428,10 +1417,9 @@ function updateFireworks() {
                 currentLineTotalWidth += adjustedSpaceWidthFireworks;
             }
         }
-        let currentXTargetForWord = (canvas.width - currentLineTotalWidth) / 2; // 시작 X
+        let currentXTargetForWord = (canvas.width - currentLineTotalWidth) / 2; 
         for (let j = 0; j < wordsInLine.length; j++) {
             if (fireworks[wordIndexInFireworks]) {
-                // targetX는 단어의 시작점이므로, 단어 너비의 절반을 더하지 않음.
                 fireworks[wordIndexInFireworks].targetX = currentXTargetForWord;
                 currentXTargetForWord += wordMetrics[j].width;
                 if (j < wordsInLine.length - 1) {
@@ -1443,13 +1431,10 @@ function updateFireworks() {
     }
 
     fireworks.forEach((fw) => {
-      // fw.targetX는 이미 단어의 시작 X. fw.x는 단어의 중심 X로 계산되어 왔었음.
-      // fillText는 시작 X를 기준으로 그리므로, targetX로 이동하면 됨.
-      // 단, 불꽃놀이 효과에서 fw.x는 중심이었으므로, 이동 시 단어 너비 고려 불필요.
-      fw.x += (fw.targetX - fw.x) * ease * 0.2; // 불꽃놀이 텍스트 중심이 타겟 X로 이동하도록
-      fw.y += (fw.targetY - fw.y) * ease * 0.2; // 타겟 Y로 이동 (textBaseline middle 기준)
+      fw.x += (fw.targetX - fw.x) * ease * 0.2; 
+      fw.y += (fw.targetY - fw.y) * ease * 0.2; 
     });
-    centerAlpha += (1.0 - centerAlpha) * ease * 0.15; // 문장 서서히 나타남
+    centerAlpha += (1.0 - centerAlpha) * ease * 0.15; 
 
     if (progress >= 1) {
         fireworksState.phase = "done";
@@ -1464,29 +1449,28 @@ function updateFireworks() {
         if (roleOfNewSentence === 'question') {
             currentQuestionSentence = newSentenceObject; currentQuestionSentenceIndex = newSentenceIndex;
             currentAnswerSentence = null; currentAnswerSentenceIndex = null;
-            showPlayButton = false; showPlayButtonQuestion = true; // 질문 재생 버튼 표시
+            showPlayButton = false; showPlayButtonQuestion = true; 
             playAudioForThisSentence = true;
         } else { // Answer
             const questionIndexOfThisAnswer = newSentenceIndex - 1;
             if (questionIndexOfThisAnswer >= 0 && sentences[questionIndexOfThisAnswer]) {
-                // 이전 질문이 현재 질문과 다르면 새로 설정
                 if (!currentQuestionSentence || currentQuestionSentenceIndex !== questionIndexOfThisAnswer) {
                     const [qL1, qL2] = splitSentence(sentences[questionIndexOfThisAnswer], true);
                     currentQuestionSentence = {line1: qL1, line2: qL2};
                     currentQuestionSentenceIndex = questionIndexOfThisAnswer;
                 }
-                 showPlayButtonQuestion = true; // 질문 재생 버튼도 계속 표시
-            } else { // 이전 질문 정보 없으면 질문 영역은 비움
+                 showPlayButtonQuestion = true; 
+            } else { 
                 currentQuestionSentence = null; currentQuestionSentenceIndex = null;
                 showPlayButtonQuestion = false;
             }
             currentAnswerSentence = newSentenceObject; currentAnswerSentenceIndex = newSentenceIndex;
-            showPlayButton = true; // 답변 재생 버튼 표시
+            showPlayButton = true; 
             playAudioForThisSentence = true;
         }
         centerAlpha = 1.0;
         fireworks = null; fireworksState = null; sentenceActive = false;
-        if (activeWordTranslation) activeWordTranslation.show = false; // 단어 번역 숨김
+        if (activeWordTranslation) activeWordTranslation.show = false; 
         activeWordTranslation = null; if (wordTranslationTimeoutId) clearTimeout(wordTranslationTimeoutId);
 
         if (playAudioForThisSentence) {
@@ -1495,8 +1479,8 @@ function updateFireworks() {
             else if (roleOfNewSentence === 'answer' && currentAnswerSentenceIndex !== null) audioIndexToPlay = currentAnswerSentenceIndex;
             
             if (audioIndexToPlay !== null) {
-                setTimeout(() => { // 약간의 딜레이 후 오디오 재생 (화면 전환 안정화)
-                    window.speechSynthesis.cancel(); // 기존 TTS 중지
+                setTimeout(() => { 
+                    window.speechSynthesis.cancel(); 
                     playSentenceAudio(audioIndexToPlay)
                         .catch(err => console.error(`Error playing sentence audio for index ${audioIndexToPlay} from fireworks:`, err));
                 }, 300);
@@ -1554,20 +1538,20 @@ function spawnEnemy() {
 }
 
 function update(delta) {
-  enemies = enemies.filter(e => e.y <= canvas.height + e.h); // Remove off-screen enemies
-  while (enemies.length < 2) { spawnEnemy(); } // Keep 2 enemies on screen
+  enemies = enemies.filter(e => e.y <= canvas.height + e.h); 
+  while (enemies.length < 2) { spawnEnemy(); } 
   enemies.forEach(e => {
     const deltaTimeSeconds = delta / 1000.0;
-    e.baseY += ENEMY_MOVEMENT_SPEED_PPS * deltaTimeSeconds; // General downward movement
+    e.baseY += ENEMY_MOVEMENT_SPEED_PPS * deltaTimeSeconds; 
     let newX = e.x; let newY = e.baseY;
-    if (e.imgIndex === 3) { // Maple Leaf specific movement
-      e.initialX += e.driftXPerSecond * deltaTimeSeconds; // Horizontal drift
+    if (e.imgIndex === 3) { 
+      e.initialX += e.driftXPerSecond * deltaTimeSeconds; 
       e.swayAngle += e.swaySpeed * deltaTimeSeconds;
-      newX = e.initialX + Math.sin(e.swayAngle) * e.swayAmplitude; // Swaying motion
-      e.rotation = Math.sin(e.swayAngle * 0.7) * 0.7; // Rotation based on sway
+      newX = e.initialX + Math.sin(e.swayAngle) * e.swayAmplitude; 
+      e.rotation = Math.sin(e.swayAngle * 0.7) * 0.7; 
       e.flutterAngle += e.flutterSpeed * deltaTimeSeconds;
-      newY = e.baseY + Math.sin(e.flutterAngle) * e.flutterAmplitude; // Fluttering vertical motion
-    } else if (e.imgIndex === 2) { // Cosmos specific movement
+      newY = e.baseY + Math.sin(e.flutterAngle) * e.flutterAmplitude; 
+    } else if (e.imgIndex === 2) { 
       e.initialX += e.driftXPerSecond * deltaTimeSeconds;
       e.rotation += e.rotationSpeed * deltaTimeSeconds;
       e.swayAngle += e.swaySpeed * deltaTimeSeconds;
@@ -1576,18 +1560,16 @@ function update(delta) {
     e.x = newX; e.y = newY;
   });
 
-  bullets = bullets.filter(b => b.y + b.h > 0); // Remove off-screen bullets
+  bullets = bullets.filter(b => b.y + b.h > 0); 
   bullets.forEach(b => {
     b.timeAlive += delta;
     const deltaTimeSeconds = delta / 1000.0;
-    b.y += b.velocityY * deltaTimeSeconds; // Vertical movement
-    b.baseX += b.driftXPerSecond * deltaTimeSeconds; // Horizontal drift base
-    // Swaying motion for bullets
+    b.y += b.velocityY * deltaTimeSeconds; 
+    b.baseX += b.driftXPerSecond * deltaTimeSeconds; 
     const swayOffset = Math.sin( (b.timeAlive / 1000.0) * b.swayFrequency + b.swayPhaseOffset ) * b.swayAmplitude;
     b.x = b.baseX + swayOffset;
   });
 
-  // Update detached petals
   detachedPetals.forEach((p, index) => {
       const deltaTimeSeconds = delta / 1000.0;
       p.baseY += p.fallSpeedPPS * deltaTimeSeconds;
@@ -1599,14 +1581,13 @@ function update(delta) {
       p.rotation += p.rotationSpeed * deltaTimeSeconds;
       p.x = currentX; p.y = currentY;
   });
-  detachedPetals = detachedPetals.filter(p => p.y <= canvas.height + p.h); // Remove off-screen petals
+  detachedPetals = detachedPetals.filter(p => p.y <= canvas.height + p.h); 
 
 
-  enemyBullets = enemyBullets.filter(b => b.y < canvas.height).map(b => { b.y += b.speed; return b; }); // Not used
+  enemyBullets = enemyBullets.filter(b => b.y < canvas.height).map(b => { b.y += b.speed; return b; }); 
   bullets.forEach((b, bi) => {
     enemies.forEach((e, ei) => {
-      // Collision detection with padding
-      const collisionPaddingFactor = 0.25; // Smaller core area for collision
+      const collisionPaddingFactor = 0.25; 
       const coreBulletOffsetX = b.w * collisionPaddingFactor;
       const coreBulletOffsetY = b.h * collisionPaddingFactor;
       const coreBulletX = b.x + coreBulletOffsetX;
@@ -1616,7 +1597,7 @@ function update(delta) {
 
       if (coreBulletX < e.x + e.w && coreBulletX + coreBulletWidth > e.x &&
           coreBulletY < e.y + e.h && coreBulletY + coreBulletHeight > e.y) {
-        if (!sentenceActive) { // Only trigger fireworks if no sentence/firework is active
+        if (!sentenceActive) { 
             const sentenceToFirework = sentences[sentenceIndex];
             const globalIndexOfSentence = sentenceIndex;
             startFireworks(sentenceToFirework, globalIndexOfSentence, e.x + e.w / 2, e.y + e.h / 2);
@@ -1624,25 +1605,24 @@ function update(delta) {
             localStorage.setItem('sentenceIndex', sentenceIndex.toString());
             sounds.explosion.play();
         }
-        enemies.splice(ei, 1); bullets.splice(bi, 1); // Remove enemy and bullet
+        enemies.splice(ei, 1); bullets.splice(bi, 1); 
       }
     });
   });
-  if (sentenceActive) { updateFireworks(); } // Update fireworks if active
+  if (sentenceActive) { updateFireworks(); } 
 
-  // Clear sentence display state if nothing is active
   if (!currentQuestionSentence && !currentAnswerSentence && !sentenceActive) {
     showPlayButton = false; showPlayButtonQuestion = false;
     showTranslationForQuestion = false; showTranslationForAnswer = false;
     if (activeWordTranslation) activeWordTranslation.show = false;
-  } else if (!sentenceActive) { // Sentence displayed but no firework
+  } else if (!sentenceActive) { 
       showPlayButtonQuestion = !!currentQuestionSentence;
       showPlayButton = !!currentAnswerSentence;
   }
 
-  // Update word animation
-  if (animatedWord.isActive) {
-    updateWordAnimation(performance.now());
+  // Update word animations (plural)
+  if (activeAnimations.length > 0) { // Check if there are any active animations
+    updateWordAnimations(performance.now());
   }
 }
 
@@ -1652,18 +1632,17 @@ function draw() {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(playerImg, player.x, player.y, player.w, player.h);
   enemies.forEach(e => {
-    if (e.imgIndex === 2 || e.imgIndex === 3) { // Rotated enemies (Cosmos, Maple)
+    if (e.imgIndex === 2 || e.imgIndex === 3) { 
       ctx.save();
       ctx.translate(e.x + e.w / 2, e.y + e.h / 2);
       ctx.rotate(e.rotation);
       ctx.drawImage(e.img, -e.w / 2, -e.h / 2, e.w, e.h);
       ctx.restore();
-    } else { ctx.drawImage(e.img, e.x, e.y, e.w, e.h); } // Static enemies
-    // Coffee steam effect for enemy type 1 (coffee cup)
+    } else { ctx.drawImage(e.img, e.x, e.y, e.w, e.h); } 
     if (e.imgIndex === 1 && coffeeSteamVideo && coffeeSteamVideo.readyState >= HTMLVideoElement.HAVE_ENOUGH_DATA && !coffeeSteamVideo.paused) {
       const steamScale = 0.5; const steamWidth = e.w * steamScale * 1.5;
       const steamHeight = e.h * steamScale * 1.6; const steamOffsetX = (e.w - steamWidth) / 2;
-      const steamOffsetY = -steamHeight * 0.85; // Position steam above cup
+      const steamOffsetY = -steamHeight * 0.85; 
       const prevCompositeOperation = ctx.globalCompositeOperation;
       ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.65;
       ctx.drawImage(coffeeSteamVideo, e.x + steamOffsetX, e.y + steamOffsetY, steamWidth, steamHeight);
@@ -1675,7 +1654,6 @@ function draw() {
       ctx.drawImage(b.img, b.x, b.y, b.w, b.h);
     }
   });
-  // Draw detached petals
   detachedPetals.forEach(p => {
       ctx.save();
       ctx.translate(p.x + p.w / 2, p.y + p.h / 2);
@@ -1684,34 +1662,31 @@ function draw() {
       ctx.restore();
   });
 
-  // Sentence and Fireworks drawing logic
-  const previousGlobalCenterAlpha = centerAlpha; // Backup alpha for fireworks
-  if (sentenceActive && fireworks && fireworksState) { // Fireworks are active
-    // If an answer is exploding, draw the preceding question statically
+  const previousGlobalCenterAlpha = centerAlpha; 
+  if (sentenceActive && fireworks && fireworksState) { 
     if (fireworksState.roleOfNewSentence === 'answer' && currentQuestionSentence) {
-      centerAlpha = 1.0; // Ensure question is fully visible
-      const tempAnswerSentence = currentAnswerSentence; // Temporarily hide answer if it's about to appear
+      centerAlpha = 1.0; 
+      const tempAnswerSentence = currentAnswerSentence; 
       const tempAnswerIndex = currentAnswerSentenceIndex;
       currentAnswerSentence = null; currentAnswerSentenceIndex = null;
-      drawCenterSentence(); // Draw only the question part
-      currentAnswerSentence = tempAnswerSentence; currentAnswerSentenceIndex = tempAnswerIndex; // Restore for later
+      drawCenterSentence(); 
+      currentAnswerSentence = tempAnswerSentence; currentAnswerSentenceIndex = tempAnswerIndex; 
     }
-    centerAlpha = previousGlobalCenterAlpha; // Restore alpha for fireworks drawing
+    centerAlpha = previousGlobalCenterAlpha; 
     drawFireworks();
-  } else { // No fireworks, just static sentences
+  } else { 
     if (currentQuestionSentence || currentAnswerSentence) {
-      centerAlpha = 1.0; // Ensure sentences are fully visible
+      centerAlpha = 1.0; 
       drawCenterSentence();
     }
   }
-  // Restore alpha for next frame if not managed by fireworks gather phase
   if (!sentenceActive) centerAlpha = 1.0;
   else if (fireworksState && fireworksState.phase === "gather") { /* Alpha managed by gather */ }
-  else centerAlpha = previousGlobalCenterAlpha; // Keep previous alpha if exploding/holding
+  else centerAlpha = previousGlobalCenterAlpha; 
 }
 
 function gameLoop(time) {
-  if (!isGameRunning || isGamePaused) { if (isGamePaused) draw(); return; } // Draw once if paused
+  if (!isGameRunning || isGamePaused) { if (isGamePaused) draw(); return; } 
   const delta = time - lastTime; lastTime = time;
   update(delta); draw();
   requestAnimationFrame(gameLoop);
@@ -1735,9 +1710,8 @@ function resetGameStateForStartStop() {
     if (wordTranslationTimeoutId) { clearTimeout(wordTranslationTimeoutId); wordTranslationTimeoutId = null; }
     centerSentenceWordRects = []; isActionLocked = false;
 
-    // Reset word animation
-    animatedWord.isActive = false;
-    animatedWord.targetWordRect = null;
+    // Reset word animations
+    activeAnimations = []; // Clear the array of active animations
 }
 
 function startGame() {
@@ -1750,28 +1724,28 @@ function startGame() {
   }
   isGameRunning = true; isGamePaused = false;
   document.getElementById('pauseBtn').textContent = 'PAUSE';
-  if (bgmAudio) { bgmAudio.pause(); } // Stop previous BGM if any
-  bgmAudio = new Audio(bgmFiles[bgmIndex]); // Re-initialize BGM
+  if (bgmAudio) { bgmAudio.pause(); } 
+  bgmAudio = new Audio(bgmFiles[bgmIndex]); 
   bgmAudio.volume = isMuted ? 0 : 0.021; bgmAudio.loop = true;
   const playPromise = bgmAudio.play();
   if (playPromise !== undefined) {
     playPromise.catch(error => { console.error('BGM play error on start:', error); });
   }
-  if (coffeeSteamVideo && coffeeVideoAssetReady) { // Play coffee video if ready
+  if (coffeeSteamVideo && coffeeVideoAssetReady) { 
     coffeeSteamVideo.currentTime = 0;
     const coffeePlayPromise = coffeeSteamVideo.play();
     if (coffeePlayPromise !== undefined) {
       coffeePlayPromise.catch(error => console.error("Error playing coffee steam video:", error));
     }
   }
-  resetGameStateForStartStop(); // Reset game elements
+  resetGameStateForStartStop(); 
   let storedIndex = Number(localStorage.getItem('sentenceIndex') || 0);
   sentenceIndex = storedIndex % sentences.length;
-  localStorage.setItem('sentenceIndex', sentenceIndex.toString()); // Update storage
-  spawnEnemy(); spawnEnemy(); // Initial enemies
+  localStorage.setItem('sentenceIndex', sentenceIndex.toString()); 
+  spawnEnemy(); spawnEnemy(); 
   player.x = canvas.width / 2 - PLAYER_SIZE / 2;
-  player.y = topOffset + (canvas.height - topOffset) - PLAYER_SIZE - 10; // Player position
-  player.y = Math.max(topOffset, player.y); // Ensure player is below top controls
+  player.y = topOffset + (canvas.height - topOffset) - PLAYER_SIZE - 10; 
+  player.y = Math.max(topOffset, player.y); 
   lastTime = performance.now();
   getVoicesReliably().catch(err => console.error("startGame: Error during voice pre-warming:", err));
   requestAnimationFrame(gameLoop);
@@ -1785,8 +1759,8 @@ function togglePause() {
     pauseButton.textContent = 'RESUME';
     if (bgmAudio && !bgmAudio.paused) bgmAudio.pause();
     if (coffeeSteamVideo && !coffeeSteamVideo.paused) coffeeSteamVideo.pause();
-    window.speechSynthesis.cancel(); // Stop any ongoing TTS
-    if (currentSentenceAudio) currentSentenceAudio.pause(); // Pause sentence audio
+    window.speechSynthesis.cancel(); 
+    if (currentSentenceAudio) currentSentenceAudio.pause(); 
   } else {
     pauseButton.textContent = 'PAUSE';
     if (bgmAudio && bgmAudio.paused && !isMuted) {
@@ -1795,11 +1769,11 @@ function togglePause() {
     if (coffeeSteamVideo && coffeeSteamVideo.paused && coffeeVideoAssetReady) {
         coffeeSteamVideo.play().catch(error => console.error("Error resuming coffee steam video:", error));
     }
-    if (currentSentenceAudio && currentSentenceAudio.paused) { // Resume sentence audio
-        currentSentenceAudio.volume = 0.8; // Ensure volume
+    if (currentSentenceAudio && currentSentenceAudio.paused) { 
+        currentSentenceAudio.volume = 0.8; 
         currentSentenceAudio.play().catch(e => console.error("Sentence audio resume error:", e));
     }
-    lastTime = performance.now(); // Reset time for smooth resume
+    lastTime = performance.now(); 
     requestAnimationFrame(gameLoop);
   }
 }
@@ -1814,20 +1788,18 @@ function stopGame() {
       currentSentenceAudio.pause(); currentSentenceAudio.currentTime = 0; currentSentenceAudio = null;
   }
   resetGameStateForStartStop();
-  ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear canvas
+  ctx.clearRect(0, 0, canvas.width, canvas.height); 
 }
 
-const expandedMargin = 10; // Expanded touch area for buttons
+const expandedMargin = 10; 
 
 function handleCanvasInteraction(clientX, clientY, event) {
   if (!isGameRunning || isGamePaused) return;
   if (!isActionLocked) {
-    // Check for play button (Question) touch
     const isPlayBtnQuestionTouched = showPlayButtonQuestion && playButtonRectQuestion &&
       clientX >= (playButtonRectQuestion.x - expandedMargin) && clientX <= (playButtonRectQuestion.x + playButtonRectQuestion.w + expandedMargin) &&
       clientY >= (playButtonRectQuestion.y - expandedMargin) && clientY <= (playButtonRectQuestion.y + playButtonRectQuestion.h + expandedMargin);
     
-    // Check for play button (Answer) touch
     const isPlayBtnAnswerTouched = showPlayButton && playButtonRect &&
       clientX >= (playButtonRect.x - expandedMargin) && clientX <= (playButtonRect.x + playButtonRect.w + expandedMargin) &&
       clientY >= (playButtonRect.y - expandedMargin) && clientY <= (playButtonRect.y + playButtonRect.h + expandedMargin);
@@ -1844,42 +1816,69 @@ function handleCanvasInteraction(clientX, clientY, event) {
           playSentenceAudio(currentQuestionSentenceIndex)
               .catch(err => console.error("Error playing question sentence audio from play button:", err));
 
-          // --- START: Word Animation Trigger (지연 포함) ---
-          const AUX_ANIMATION_DELAY_QUESTION = 300; // 300ms (0.3초) 지연
+          const AUX_ANIMATION_DELAY_QUESTION = 300; 
 
           setTimeout(() => {
             if (!isGameRunning || isGamePaused || !currentQuestionSentence || currentQuestionSentenceIndex === null) {
                 return;
             }
 
+            // --- START: Modified Word Animation Trigger for Question ---
             if (currentQuestionSentence && (currentQuestionSentence.line1.trim() || currentQuestionSentence.line2.trim())) {
-                const firstLineText = currentQuestionSentence.line1.trim() ? currentQuestionSentence.line1 : currentQuestionSentence.line2;
-                const firstWordText = firstLineText.split(" ")[0];
-                const targetLineIndex = currentQuestionSentence.line1.trim() ? 0 : 1;
-                
-                const questionWordRects = centerSentenceWordRects.filter(r => r.isQuestionWord);
-                if (questionWordRects.length > 0) {
-                    questionWordRects.sort((a,b) => {
-                        if (a.lineIndex !== b.lineIndex) return a.lineIndex - b.lineIndex;
-                        return a.x - b.x;
-                    });
-                     if (questionWordRects[0].word === firstWordText) { 
-                          startWordWaveAnimation(questionWordRects[0], ctx);
-                     } else { 
-                          const specificFirstWordRect = questionWordRects.find(rect => rect.word === firstWordText && rect.lineIndex === targetLineIndex);
-                          if (specificFirstWordRect) startWordWaveAnimation(specificFirstWordRect, ctx);
+                const questionWordRectsSorted = centerSentenceWordRects.filter(r => r.isQuestionWord).sort((a,b) => {
+                    if (a.lineIndex !== b.lineIndex) return a.lineIndex - b.lineIndex;
+                    return a.x - b.x;
+                });
+
+                if (questionWordRectsSorted.length > 0) {
+                     const firstWordRectToAnimate = questionWordRectsSorted[0]; 
+                     startWordWaveAnimation(firstWordRectToAnimate, ctx);
+
+                     const wordsToAnimateSubsequently = [];
+                     const firstWordIndexInRects = 0; 
+
+                     if (firstWordIndexInRects + 1 < questionWordRectsSorted.length) {
+                        const secondWordRect = questionWordRectsSorted[firstWordIndexInRects + 1];
+                        const secondWordTextClean = secondWordRect.word.toLowerCase().replace(/[^a-z0-9']/g, "");
+
+                        if (isAux(secondWordTextClean)) {
+                            wordsToAnimateSubsequently.push(secondWordRect); // Always add the Auxiliary verb if it's the second word.
+
+                            if (firstWordIndexInRects + 2 < questionWordRectsSorted.length) { // Check if a third word exists
+                                const thirdWordRect = questionWordRectsSorted[firstWordIndexInRects + 2];
+                                const thirdWordTextClean = thirdWordRect.word.toLowerCase().replace(/[^a-z0-9']/g, "");
+
+                                // Case 1: Auxiliary + "have"
+                                if (thirdWordTextClean === "have") {
+                                    wordsToAnimateSubsequently.push(thirdWordRect);
+                                }
+                                // Case 2: Auxiliary + Subject
+                                // A Subject is defined here as a word that is NOT "have", NOT a main verb, and NOT another auxiliary.
+                                else if (!isVerb(thirdWordTextClean) && !isAux(thirdWordTextClean)) {
+                                    wordsToAnimateSubsequently.push(thirdWordRect);
+                                }
+                                // Case 3: Auxiliary + Verb (e.g., "will bring") or Auxiliary + other.
+                                // In this scenario, only the Auxiliary (secondWordRect) jumps, which is already in wordsToAnimateSubsequently.
+                            }
+                        }
+                     }
+
+                     if (wordsToAnimateSubsequently.length > 0) {
+                        setTimeout(() => {
+                            if (!isGameRunning || isGamePaused) return; // Re-check game state
+                            wordsToAnimateSubsequently.forEach(rect => {
+                                startWordWaveAnimation(rect, ctx);
+                            });
+                        }, WORD_ANIM_DURATION_UP); // Delay for first word to reach peak
                      }
                 }
             }
+            // --- END: Modified Word Animation Trigger for Question ---
           }, AUX_ANIMATION_DELAY_QUESTION);
-          // --- END: Word Animation Trigger (지연 포함) ---
       }
       event.preventDefault(); setTimeout(() => { isActionLocked = false; }, 200); return;
     }
 
-    // ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-    // 답변 문장 플레이 버튼 (isPlayBtnAnswerTouched) 로직 수정된 부분
-    // ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
     if (isPlayBtnAnswerTouched) {
       showTranslationForAnswer = true; showTranslationForQuestion = false;
       if (activeWordTranslation) activeWordTranslation.show = false;
@@ -1893,7 +1892,7 @@ function handleCanvasInteraction(clientX, clientY, event) {
           playSentenceAudio(currentAnswerSentenceIndex)
               .catch(err => console.error("Error playing answer sentence audio from play button:", err));
 
-          const AUX_ANIMATION_DELAY = 300; // 수정된 지연 시간 (기존 600ms에서 300ms로 단축)
+          const AUX_ANIMATION_DELAY = 300; 
 
           setTimeout(() => {
             if (!isGameRunning || isGamePaused || !currentAnswerSentence || currentAnswerSentenceIndex === null) {
@@ -1956,9 +1955,6 @@ function handleCanvasInteraction(clientX, clientY, event) {
       setTimeout(() => { isActionLocked = false; }, 200); 
       return; 
     }
-    // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-    // 답변 문장 플레이 버튼 (isPlayBtnAnswerTouched) 로직 수정 끝
-    // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
     if ((currentQuestionSentence || currentAnswerSentence) && centerSentenceWordRects.length > 0) {
         for (const wordRect of centerSentenceWordRects) {
