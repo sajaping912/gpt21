@@ -282,16 +282,16 @@ async function playSentenceAudio(index) {
 
     currentSentenceAudio.onended = () => {
       currentSentenceAudio = null;
-      resolve();
+      // 이 Promise는 재생 시작 시 resolve되므로, onended에서는 resolve하지 않습니다.
     };
     currentSentenceAudio.onerror = (e) => {
       console.error(`Error playing sentence audio: ${audioFilePath}`, e);
       currentSentenceAudio = null;
-      reject(e);
+      reject(e); 
     };
     
     currentSentenceAudio.play().then(() => {
-        // resolve(); 
+        resolve(); // 재생이 성공적으로 시작되면 Promise를 resolve합니다.
     }).catch(e => {
       console.error(`Failed to play ${audioFilePath}`, e);
       currentSentenceAudio = null;
@@ -959,6 +959,103 @@ function updateWordAnimations(currentTime) { // Plural, as it updates all active
 }
 // --- END: Word Animation Variables and Functions ---
 
+// --- START: New/Modified triggerSentenceWordAnimation Function ---
+function triggerSentenceWordAnimation(sentenceObject, isQuestion, allWordRects, drawingContext, animationStartDelay = 0) {
+  if (!isGameRunning || isGamePaused || !sentenceObject || !allWordRects || allWordRects.length === 0) {
+    return;
+  }
+
+  setTimeout(() => { // 전체 애니메이션 로직 시작 전 지연
+    if (!isGameRunning || isGamePaused) return; // 지연 후 게임 상태 재확인
+
+    const relevantWordRects = allWordRects.filter(r => r.isQuestionWord === isQuestion)
+      .sort((a, b) => { // 라인과 x축 기준으로 정렬하여 올바른 순서 보장
+        if (a.lineIndex !== b.lineIndex) return a.lineIndex - b.lineIndex;
+        return a.x - b.x;
+      });
+
+    if (relevantWordRects.length === 0) return;
+
+    if (isQuestion) {
+      // 질문 문장 애니메이션 로직 (isPlayBtnQuestionTouched 로직과 유사)
+      const firstWordRectToAnimate = relevantWordRects[0];
+      startWordWaveAnimation(firstWordRectToAnimate, drawingContext);
+
+      const wordsToAnimateSubsequently = [];
+      const firstWordIndexInRects = 0;
+
+      if (firstWordIndexInRects + 1 < relevantWordRects.length) {
+        const secondWordRect = relevantWordRects[firstWordIndexInRects + 1];
+        const secondWordTextClean = secondWordRect.word.toLowerCase().replace(/[^a-z0-9']/g, "");
+
+        if (isAux(secondWordTextClean)) {
+          wordsToAnimateSubsequently.push(secondWordRect);
+
+          if (firstWordIndexInRects + 2 < relevantWordRects.length) {
+            const thirdWordRect = relevantWordRects[firstWordIndexInRects + 2];
+            const thirdWordTextClean = thirdWordRect.word.toLowerCase().replace(/[^a-z0-9']/g, "");
+            if (thirdWordTextClean === "have" || (!isVerb(thirdWordTextClean) && !isAux(thirdWordTextClean))) {
+               wordsToAnimateSubsequently.push(thirdWordRect);
+            }
+          }
+        }
+      }
+
+      if (wordsToAnimateSubsequently.length > 0) {
+        setTimeout(() => { // 첫 단어가 정점에 도달할 시간 후 다음 단어들 애니메이션
+          if (!isGameRunning || isGamePaused) return;
+          wordsToAnimateSubsequently.forEach(rect => {
+            startWordWaveAnimation(rect, drawingContext);
+          });
+        }, WORD_ANIM_DURATION_UP);
+      }
+    } else { // 답변 문장 애니메이션 로직 (isPlayBtnAnswerTouched 로직과 유사)
+      const fullSentenceText = (sentenceObject.line1 + " " + sentenceObject.line2).trim();
+      const wordsInSentence = fullSentenceText.split(" ").filter(w => w.length > 0);
+
+      if (wordsInSentence.length > 0) {
+        let subjectEndIndex = -1;
+        for (let i = 0; i < wordsInSentence.length; i++) {
+          if (isAux(wordsInSentence[i]) ||
+              (isVerb(wordsInSentence[i]) && !isAux(wordsInSentence[i])) ||
+              isVing(wordsInSentence[i]) ||
+              isBeen(wordsInSentence[i])) {
+            subjectEndIndex = i - 1;
+            break;
+          }
+          if (i === wordsInSentence.length - 1) { // 문장 끝까지 주어일 경우
+            subjectEndIndex = i;
+          }
+        }
+
+        let auxWordForAnimation = null;
+        let auxWordGlobalIndexInSentence = -1;
+
+        if (subjectEndIndex >= 0 && (subjectEndIndex + 1) < wordsInSentence.length) {
+          const potentialAux = wordsInSentence[subjectEndIndex + 1];
+          if (isAux(potentialAux)) {
+            auxWordForAnimation = potentialAux;
+            auxWordGlobalIndexInSentence = subjectEndIndex + 1;
+          }
+        }
+
+        if (auxWordForAnimation && auxWordGlobalIndexInSentence !== -1) {
+          if (relevantWordRects.length > auxWordGlobalIndexInSentence) {
+            const targetWordRectCandidate = relevantWordRects[auxWordGlobalIndexInSentence];
+            // 안전하게 단어 텍스트도 비교 (이미 정렬되었으므로 인덱스가 맞아야 함)
+            const candidateTextClean = targetWordRectCandidate.word.replace(/[^a-zA-Z0-9']/g, "").toLowerCase();
+            const auxWordTextClean = auxWordForAnimation.replace(/[^a-zA-Z0-9']/g, "").toLowerCase();
+
+            if (candidateTextClean === auxWordTextClean) {
+              startWordWaveAnimation(targetWordRectCandidate, drawingContext);
+            }
+          }
+        }
+      }
+    }
+  }, animationStartDelay); // 인자로 받은 지연 시간 적용
+}
+// --- END: New/Modified triggerSentenceWordAnimation Function ---
 
 function drawSingleSentenceBlock(sentenceObject, baseY, isQuestionBlock, blockContext) {
     if (!sentenceObject) return { lastY: baseY, wordRects: [] };
@@ -1475,15 +1572,38 @@ function updateFireworks() {
 
         if (playAudioForThisSentence) {
             let audioIndexToPlay = null;
-            if (roleOfNewSentence === 'question' && currentQuestionSentenceIndex !== null) audioIndexToPlay = currentQuestionSentenceIndex;
-            else if (roleOfNewSentence === 'answer' && currentAnswerSentenceIndex !== null) audioIndexToPlay = currentAnswerSentenceIndex;
+            let sentenceObjectForAnimation = null;
+            let isQuestionForAnimation = false;
+
+            if (roleOfNewSentence === 'question' && currentQuestionSentenceIndex !== null) {
+                audioIndexToPlay = currentQuestionSentenceIndex;
+                sentenceObjectForAnimation = currentQuestionSentence;
+                isQuestionForAnimation = true;
+            } else if (roleOfNewSentence === 'answer' && currentAnswerSentenceIndex !== null) {
+                audioIndexToPlay = currentAnswerSentenceIndex;
+                sentenceObjectForAnimation = currentAnswerSentence;
+                isQuestionForAnimation = false;
+            }
             
-            if (audioIndexToPlay !== null) {
+            if (audioIndexToPlay !== null && sentenceObjectForAnimation) {
+                // 문장 안정화 및 오디오 준비를 위한 기존 지연 시간
                 setTimeout(() => { 
                     window.speechSynthesis.cancel(); 
                     playSentenceAudio(audioIndexToPlay)
+                        .then(() => {
+                            // 오디오 재생이 시작된 후 애니메이션 트리거
+                            // 플레이 버튼 터치 시의 애니메이션 지연(AUX_ANIMATION_DELAY 등)과 유사한 값을 사용
+                            // 여기서는 300ms를 사용하여 음성 시작과 애니메이션 시작 사이에 약간의 간격을 둠
+                            triggerSentenceWordAnimation(
+                                sentenceObjectForAnimation, 
+                                isQuestionForAnimation, 
+                                centerSentenceWordRects, // 이 시점에는 drawCenterSentence를 통해 채워져 있을 것으로 기대
+                                ctx, 
+                                300 // 음성 시작 후 애니메이션 시작까지의 지연 시간
+                            );
+                        })
                         .catch(err => console.error(`Error playing sentence audio for index ${audioIndexToPlay} from fireworks:`, err));
-                }, 300);
+                }, 300); // 불꽃놀이 종료 후 문장 표시 및 오디오 재생까지의 지연
             }
         }
     }
@@ -1812,69 +1932,18 @@ function handleCanvasInteraction(clientX, clientY, event) {
       
       if (currentQuestionSentenceIndex !== null) {
           window.speechSynthesis.cancel(); 
-
           playSentenceAudio(currentQuestionSentenceIndex)
+              .then(() => {
+                  // 오디오 시작 후 애니메이션 트리거
+                  triggerSentenceWordAnimation(
+                      currentQuestionSentence, 
+                      true, // isQuestion
+                      centerSentenceWordRects, 
+                      ctx, 
+                      300 // AUX_ANIMATION_DELAY_QUESTION 과 동일한 지연
+                  );
+              })
               .catch(err => console.error("Error playing question sentence audio from play button:", err));
-
-          const AUX_ANIMATION_DELAY_QUESTION = 300; 
-
-          setTimeout(() => {
-            if (!isGameRunning || isGamePaused || !currentQuestionSentence || currentQuestionSentenceIndex === null) {
-                return;
-            }
-
-            // --- START: Modified Word Animation Trigger for Question ---
-            if (currentQuestionSentence && (currentQuestionSentence.line1.trim() || currentQuestionSentence.line2.trim())) {
-                const questionWordRectsSorted = centerSentenceWordRects.filter(r => r.isQuestionWord).sort((a,b) => {
-                    if (a.lineIndex !== b.lineIndex) return a.lineIndex - b.lineIndex;
-                    return a.x - b.x;
-                });
-
-                if (questionWordRectsSorted.length > 0) {
-                     const firstWordRectToAnimate = questionWordRectsSorted[0]; 
-                     startWordWaveAnimation(firstWordRectToAnimate, ctx);
-
-                     const wordsToAnimateSubsequently = [];
-                     const firstWordIndexInRects = 0; 
-
-                     if (firstWordIndexInRects + 1 < questionWordRectsSorted.length) {
-                        const secondWordRect = questionWordRectsSorted[firstWordIndexInRects + 1];
-                        const secondWordTextClean = secondWordRect.word.toLowerCase().replace(/[^a-z0-9']/g, "");
-
-                        if (isAux(secondWordTextClean)) {
-                            wordsToAnimateSubsequently.push(secondWordRect); // Always add the Auxiliary verb if it's the second word.
-
-                            if (firstWordIndexInRects + 2 < questionWordRectsSorted.length) { // Check if a third word exists
-                                const thirdWordRect = questionWordRectsSorted[firstWordIndexInRects + 2];
-                                const thirdWordTextClean = thirdWordRect.word.toLowerCase().replace(/[^a-z0-9']/g, "");
-
-                                // Case 1: Auxiliary + "have"
-                                if (thirdWordTextClean === "have") {
-                                    wordsToAnimateSubsequently.push(thirdWordRect);
-                                }
-                                // Case 2: Auxiliary + Subject
-                                // A Subject is defined here as a word that is NOT "have", NOT a main verb, and NOT another auxiliary.
-                                else if (!isVerb(thirdWordTextClean) && !isAux(thirdWordTextClean)) {
-                                    wordsToAnimateSubsequently.push(thirdWordRect);
-                                }
-                                // Case 3: Auxiliary + Verb (e.g., "will bring") or Auxiliary + other.
-                                // In this scenario, only the Auxiliary (secondWordRect) jumps, which is already in wordsToAnimateSubsequently.
-                            }
-                        }
-                     }
-
-                     if (wordsToAnimateSubsequently.length > 0) {
-                        setTimeout(() => {
-                            if (!isGameRunning || isGamePaused) return; // Re-check game state
-                            wordsToAnimateSubsequently.forEach(rect => {
-                                startWordWaveAnimation(rect, ctx);
-                            });
-                        }, WORD_ANIM_DURATION_UP); // Delay for first word to reach peak
-                     }
-                }
-            }
-            // --- END: Modified Word Animation Trigger for Question ---
-          }, AUX_ANIMATION_DELAY_QUESTION);
       }
       event.preventDefault(); setTimeout(() => { isActionLocked = false; }, 200); return;
     }
@@ -1888,68 +1957,18 @@ function handleCanvasInteraction(clientX, clientY, event) {
 
       if (currentAnswerSentenceIndex !== null) {
           window.speechSynthesis.cancel(); 
-
           playSentenceAudio(currentAnswerSentenceIndex)
+              .then(() => {
+                  // 오디오 시작 후 애니메이션 트리거
+                  triggerSentenceWordAnimation(
+                      currentAnswerSentence, 
+                      false, // isQuestion
+                      centerSentenceWordRects, 
+                      ctx, 
+                      300 // AUX_ANIMATION_DELAY 와 동일한 지연
+                  );
+              })
               .catch(err => console.error("Error playing answer sentence audio from play button:", err));
-
-          const AUX_ANIMATION_DELAY = 300; 
-
-          setTimeout(() => {
-            if (!isGameRunning || isGamePaused || !currentAnswerSentence || currentAnswerSentenceIndex === null) {
-                return;
-            }
-
-            if (currentAnswerSentence.line1.trim() || currentAnswerSentence.line2.trim()) {
-                const fullAnswerText = (currentAnswerSentence.line1 + " " + currentAnswerSentence.line2).trim();
-                const wordsInAnswer = fullAnswerText.split(" ").filter(w => w.length > 0);
-
-                if (wordsInAnswer.length > 0) {
-                    let subjectEndIndex = -1;
-                    for (let i = 0; i < wordsInAnswer.length; i++) {
-                        if (isAux(wordsInAnswer[i]) ||
-                            (isVerb(wordsInAnswer[i]) && !isAux(wordsInAnswer[i])) ||
-                            isVing(wordsInAnswer[i]) ||
-                            isBeen(wordsInAnswer[i])) {
-                            subjectEndIndex = i - 1;
-                            break;
-                        }
-                        if (i === wordsInAnswer.length - 1) {
-                            subjectEndIndex = i;
-                        }
-                    }
-
-                    let auxWordForAnimation = null;
-                    let auxWordGlobalIndexInAnswer = -1;
-
-                    if (subjectEndIndex >= 0 && (subjectEndIndex + 1) < wordsInAnswer.length) {
-                        const potentialAux = wordsInAnswer[subjectEndIndex + 1];
-                        if (isAux(potentialAux)) {
-                            auxWordForAnimation = potentialAux;
-                            auxWordGlobalIndexInAnswer = subjectEndIndex + 1;
-                        }
-                    }
-
-                    if (auxWordForAnimation && auxWordGlobalIndexInAnswer !== -1) {
-                        const answerWordRectsOrdered = centerSentenceWordRects
-                            .filter(r => !r.isQuestionWord)
-                            .sort((a, b) => {
-                                if (a.lineIndex !== b.lineIndex) return a.lineIndex - b.lineIndex;
-                                return a.x - b.x;
-                            });
-
-                        if (answerWordRectsOrdered.length > auxWordGlobalIndexInAnswer) {
-                            const targetWordRectCandidate = answerWordRectsOrdered[auxWordGlobalIndexInAnswer];
-                            const candidateTextClean = targetWordRectCandidate.word.replace(/[^a-zA-Z0-9']/g, "").toLowerCase();
-                            const auxWordTextClean = auxWordForAnimation.replace(/[^a-zA-Z0-9']/g, "").toLowerCase();
-
-                            if (candidateTextClean === auxWordTextClean) {
-                                startWordWaveAnimation(targetWordRectCandidate, ctx);
-                            }
-                        }
-                    }
-                }
-            }
-          }, AUX_ANIMATION_DELAY);
       }
       event.preventDefault(); 
       setTimeout(() => { isActionLocked = false; }, 200); 
